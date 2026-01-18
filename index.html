@@ -2,20 +2,21 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>Gold Saturn Hand Particles</title>
+    <title>Gesture Controlled Saturn</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #050505; } /* 배경을 완전 검정보다 살짝 밝게 */
+        body { margin: 0; overflow: hidden; background-color: #050505; }
         video { display: none; }
         #info {
             position: absolute;
             top: 10px;
             width: 100%;
             text-align: center;
-            color: #ffd700; /* 텍스트도 금색 */
+            color: #ffd700;
             font-family: sans-serif;
             pointer-events: none;
             z-index: 10;
             text-shadow: 0 0 5px black;
+            font-size: 1.2rem;
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -24,44 +25,230 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
-    <div id="info">손을 중앙으로 모으면 토성이 되고, 밖으로 빼면 흩어집니다.</div>
+    <div id="info">✊ 주먹: 토성 소환 | 🖐 손바닥: 흩어지기 & 물결치기</div>
     <video id="input_video"></video>
     
     <script>
-        let isSaturnMode = false; // 현재 토성 모드인지 상태 변수
+        let isSaturnMode = false; // 주먹 쥐면 true, 펴면 false
 
-        // 1. Three.js 기본 세팅
+        // 1. Three.js 설정
         const scene = new THREE.Scene();
-        // 안개 효과를 줘서 깊이감 추가
         scene.fog = new THREE.FogExp2(0x050505, 0.005);
         
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio); // 선명하게
+        renderer.setPixelRatio(window.devicePixelRatio);
         document.body.appendChild(renderer.domElement);
 
         camera.position.z = 60;
 
-        // 2. 입자(Particles) 세팅 (더 세밀하게)
-        const particleCount = 12000; // 입자 수 3배 증가
+        // 2. 입자 생성 (금색, 세밀하게)
+        const particleCount = 12000;
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(particleCount * 3);
-        const originalPositions = new Float32Array(particleCount * 3); // 원래 흩어진 위치
-        const saturnPositions = new Float32Array(particleCount * 3);   // 토성 모양 목표 위치
+        const originalPositions = new Float32Array(particleCount * 3);
+        const saturnPositions = new Float32Array(particleCount * 3);
 
-        // 초기 위치 및 토성 목표 위치 계산
         for (let i = 0; i < particleCount; i++) {
             const i3 = i * 3;
 
-            // [기본 위치] 넓게 퍼진 형태
-            const spread = 100;
+            // 기본 위치 (넓게 분포)
+            const spread = 120;
             positions[i3] = (Math.random() - 0.5) * spread;
             positions[i3 + 1] = (Math.random() - 0.5) * spread;
             positions[i3 + 2] = (Math.random() - 0.5) * spread;
             
             originalPositions[i3] = positions[i3];
             originalPositions[i3 + 1] = positions[i3 + 1];
+            originalPositions[i3 + 2] = positions[i3 + 2];
+
+            // 토성 목표 위치 계산
+            if (i < particleCount * 0.25) { // 중앙 구체
+                const radius = Math.random() * 8;
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(Math.random() * 2 - 1);
+                saturnPositions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+                saturnPositions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+                saturnPositions[i3 + 2] = radius * Math.cos(phi);
+            } else { // 고리
+                const innerRadius = 12;
+                const outerRadius = 25;
+                const ringRadius = innerRadius + Math.random() * (outerRadius - innerRadius);
+                const angle = (i / particleCount) * Math.PI * 2 * 10;
+                
+                saturnPositions[i3] = Math.cos(angle) * ringRadius;
+                saturnPositions[i3 + 1] = (Math.random() -0.5) * 1.5; 
+                saturnPositions[i3 + 2] = Math.sin(angle) * ringRadius;
+            }
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        const material = new THREE.PointsMaterial({
+            color: 0xffcc00, 
+            size: 0.3,      
+            transparent: true,
+            opacity: 0.9,
+            blending: THREE.AdditiveBlending,
+            sizeAttenuation: true
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // 손 좌표
+        let handPos = { x: 9999, y: 9999 };
+
+        // 3. MediaPipe Hands
+        const videoElement = document.getElementById('input_video');
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        // 주먹 인식 함수
+        function isFist(landmarks) {
+            // 접힌 손가락 개수 세기 (엄지 제외 검지~새끼)
+            let foldedCount = 0;
+            // 8:검지끝, 6:검지관절 ... 
+            if (landmarks[8].y > landmarks[6].y) foldedCount++;  // 화면상 아래쪽이 y값이 큼 (보통 손가락 내리면 y증가)
+            if (landmarks[12].y > landmarks[10].y) foldedCount++;
+            if (landmarks[16].y > landmarks[14].y) foldedCount++;
+            if (landmarks[20].y > landmarks[18].y) foldedCount++;
+            
+            // 손이 뒤집혀있을 수도 있으니, 손목(0)과 손가락 끝 거리로 판단하는 게 더 정확함
+            const wrist = landmarks[0];
+            const tips = [8, 12, 16, 20];
+            const pips = [6, 10, 14, 18]; // 중간 관절
+            
+            let closeCount = 0;
+            for(let i=0; i<4; i++) {
+                // 손목-손끝 거리 vs 손목-중간관절 거리 비교
+                const dTip = dist(wrist, landmarks[tips[i]]);
+                const dPip = dist(wrist, landmarks[pips[i]]);
+                // 손끝이 관절보다 손목에 가까우면 접힌 것
+                if (dTip < dPip * 1.2) closeCount++; 
+            }
+            
+            return closeCount >= 3; // 3개 이상 접혔으면 주먹으로 간주
+        }
+
+        function dist(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // 1. 제스처 인식 (주먹 vs 펴기)
+                isSaturnMode = isFist(landmarks);
+
+                // 2. 손 위치 계산 (화면 중앙 기준 매핑)
+                const indexFinger = landmarks[9]; // 손바닥 중앙(9) 기준
+                
+                const vector = new THREE.Vector3(
+                    (1 - indexFinger.x) * 2 - 1,
+                    -(indexFinger.y) * 2 + 1,
+                    0.5
+                );
+                vector.unproject(camera);
+                const dir = vector.sub(camera.position).normalize();
+                const distance = -camera.position.z / dir.z;
+                const pos = camera.position.clone().add(dir.multiplyScalar(distance));
+                
+                handPos.x = pos.x;
+                handPos.y = pos.y;
+            } else {
+                // 손 없으면 초기화 안하고 그냥 마지막 상태 유지하거나 멀리 치움
+                // 여기선 반응 없애기 위해 멀리 보냄
+                handPos.x = 9999; handPos.y = 9999;
+            }
+        }
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        // 4. 애니메이션
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posAttr = particles.geometry.attributes.position;
+            const posArr = posAttr.array;
+
+            // 모드별 설정
+            const moveSpeed = isSaturnMode ? 0.06 : 0.05; 
+            const rotationSpeed = isSaturnMode ? 0.02 : 0.001;
+
+            const waveRadius = 15; 
+            const waveForce = 3;
+
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+                const px = posArr[i3];
+                const py = posArr[i3 + 1];
+                const pz = posArr[i3 + 2];
+
+                // 목표 위치: 주먹(토성) vs 펴기(원래위치)
+                let targetX = isSaturnMode ? saturnPositions[i3] : originalPositions[i3];
+                let targetY = isSaturnMode ? saturnPositions[i3 + 1] : originalPositions[i3 + 1];
+                let targetZ = isSaturnMode ? saturnPositions[i3 + 2] : originalPositions[i3 + 2];
+
+                // 이동 (Lerp)
+                posArr[i3] += (targetX - px) * moveSpeed;
+                posArr[i3 + 1] += (targetY - py) * moveSpeed;
+                posArr[i3 + 2] += (targetZ - pz) * moveSpeed;
+
+                // [물결 효과] 주먹 안 쥐었을 때만(isSaturnMode == false) 작동
+                if (!isSaturnMode) {
+                    const dx = px - handPos.x;
+                    const dy = py - handPos.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (dist < waveRadius) {
+                        const angle = Math.atan2(dy, dx);
+                        const force = (1 - dist / waveRadius) * waveForce;
+                        posArr[i3] += Math.cos(angle) * force;
+                        posArr[i3 + 1] += Math.sin(angle) * force;
+                    }
+                }
+            }
+
+            posAttr.needsUpdate = true;
+            
+            // 회전
+            particles.rotation.y += rotationSpeed;
+            if(isSaturnMode) {
+                 particles.rotation.x = THREE.MathUtils.lerp(particles.rotation.x, 0.5, 0.05);
+                 particles.rotation.z = THREE.MathUtils.lerp(particles.rotation.z, 0.3, 0.05);
+            } else {
+                 particles.rotation.x = THREE.MathUtils.lerp(particles.rotation.x, 0, 0.05);
+                 particles.rotation.z = THREE.MathUtils.lerp(particles.rotation.z, 0, 0.05);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
             originalPositions[i3 + 2] = positions[i3 + 2];
 
             // [토성 목표 위치] 계산
