@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Hand Gesture 3D Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        video { display: none; } /* 웹캠 비디오는 숨김 */
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: sans-serif;
+            pointer-events: none;
+            z-index: 10;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div id="info">카메라 권한을 허용하고 손을 비춰봐 (로컬 서버 필요)</div>
+    <video id="input_video"></video>
+    
+    <script>
+        // 1. Three.js 기본 세팅 (무대 만들기)
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        camera.position.z = 50;
+
+        // 2. 입자(Particles) 만들기
+        const particleCount = 4000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        const originalPositions = new Float32Array(particleCount * 3); // 원래 위치 기억용
+
+        for (let i = 0; i < particleCount * 3; i++) {
+            // -40 ~ 40 사이에 랜덤 배치
+            const val = (Math.random() - 0.5) * 80;
+            positions[i] = val;
+            originalPositions[i] = val;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        const material = new THREE.PointsMaterial({
+            color: 0x00ffff,
+            size: 0.5,
+            transparent: true,
+            opacity: 0.8
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // 손 위치 변수 (초기값은 화면 밖)
+        let handPos = { x: 9999, y: 9999, z: 0 };
+
+        // 3. MediaPipe Hands 설정
+        const videoElement = document.getElementById('input_video');
+        
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        // 손 인식 결과 처리
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // 첫 번째 손의 검지 손가락 끝(인덱스 8)만 가져옴
+                const landmarks = results.multiHandLandmarks[0];
+                const indexFinger = landmarks[8]; 
+
+                // 화면 좌표(0~1)를 Three.js 월드 좌표로 변환 (대략적인 매핑)
+                // 카메라 z=50 기준, 화면 비율 고려해서 좌표계 변환
+                const vector = new THREE.Vector3(
+                    (1 - indexFinger.x) * 2 - 1, // 좌우 반전
+                    -(indexFinger.y) * 2 + 1,
+                    0.5
+                );
+                
+                vector.unproject(camera);
+                const dir = vector.sub(camera.position).normalize();
+                const distance = -camera.position.z / dir.z; // z=0 평면과의 교차점
+                const pos = camera.position.clone().add(dir.multiplyScalar(distance));
+                
+                handPos.x = pos.x;
+                handPos.y = pos.y;
+            } else {
+                // 손 없으면 멀리 치워둠
+                handPos.x = 9999;
+                handPos.y = 9999;
+            }
+        }
+
+        // 카메라 시작
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        cameraUtils.start();
+
+        // 4. 애니메이션 루프 (입자 움직임 계산)
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posAttr = particles.geometry.attributes.position;
+            const posArr = posAttr.array;
+
+            // 마우스(손) 효과 범위랑 힘
+            const radius = 8; 
+            const force = 2;
+
+            for (let i = 0; i < particleCount; i++) {
+                const ix = i * 3;
+                const iy = i * 3 + 1;
+                const iz = i * 3 + 2;
+
+                const px = posArr[ix];
+                const py = posArr[iy];
+                
+                // 손 위치와의 거리 계산
+                const dx = px - handPos.x;
+                const dy = py - handPos.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                // 손이 가까우면 밀어내기
+                if (dist < radius) {
+                    const angle = Math.atan2(dy, dx);
+                    // 목표 위치로 조금씩 이동
+                    posArr[ix] += Math.cos(angle) * force;
+                    posArr[iy] += Math.sin(angle) * force;
+                } else {
+                    // 손이 없거나 멀면 원래 자리로 천천히 복귀 (탄성 효과)
+                    posArr[ix] += (originalPositions[ix] - posArr[ix]) * 0.05;
+                    posArr[iy] += (originalPositions[iy] - posArr[iy]) * 0.05;
+                    posArr[iz] += (originalPositions[iz] - posArr[iz]) * 0.05;
+                }
+            }
+
+            posAttr.needsUpdate = true; // 위치 업데이트 알림
+            particles.rotation.y += 0.002; // 전체 살짝 회전
+            
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // 화면 크기 조절 대응
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
