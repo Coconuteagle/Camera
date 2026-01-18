@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>Hand Gesture Universe</title>
+    <title>Gentle Space Control</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #050505; }
         video { display: none; }
@@ -27,19 +27,18 @@
 </head>
 <body>
     <div id="info">
-        🖐 손바닥: 앞(후퇴) / 뒤(돌진)<br>
-        ✊ 주먹: 상하좌우(토성 회전 관찰)
+        🖐 손바닥 앞/뒤: 별들이 미세하게 이동 (유영)<br>
+        ✊ 주먹 상하좌우: 토성 회전 관찰
     </div>
     <video id="input_video"></video>
     
     <script>
-        // 상태 변수들
         let isSaturnMode = false;
-        let handNormalized = { x: 0, y: 0, z: 0 }; // 손의 화면상 상대 좌표 (-1 ~ 1) 및 거리(크기)
+        let handNormalized = { x: 0, y: 0, z: 0 }; 
 
-        // 1. Three.js 씬 설정
+        // 1. 씬 설정
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x050505, 0.002); // 안개 농도 조절
+        scene.fog = new THREE.FogExp2(0x050505, 0.002);
         
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -53,15 +52,196 @@
         const particleCount = 12000;
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(particleCount * 3);
-        const originalPositions = new Float32Array(particleCount * 3); // 펴졌을 때(우주) 위치
-        const saturnPositions = new Float32Array(particleCount * 3);   // 토성 위치
+        const originalPositions = new Float32Array(particleCount * 3); 
+        const saturnPositions = new Float32Array(particleCount * 3);  
 
-        // 초기화
         for (let i = 0; i < particleCount; i++) {
             const i3 = i * 3;
 
-            // [우주 모드] 깊이감을 위해 Z축을 아주 길게 배치
-            const spreadXY = 200; 
+            // 우주 배경 배치
+            const spreadXY = 250; 
+            const spreadZ = 400; 
+
+            positions[i3] = (Math.random() - 0.5) * spreadXY;
+            positions[i3 + 1] = (Math.random() - 0.5) * spreadXY;
+            positions[i3 + 2] = (Math.random() - 0.5) * spreadZ; 
+            
+            originalPositions[i3] = positions[i3];
+            originalPositions[i3 + 1] = positions[i3 + 1];
+            originalPositions[i3 + 2] = positions[i3 + 2];
+
+            // 토성 모양 배치
+            if (i < particleCount * 0.3) { 
+                const radius = Math.random() * 15;
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(Math.random() * 2 - 1);
+                saturnPositions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+                saturnPositions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+                saturnPositions[i3 + 2] = radius * Math.cos(phi);
+            } else { 
+                const innerRadius = 20;
+                const outerRadius = 45;
+                const ringRadius = innerRadius + Math.random() * (outerRadius - innerRadius);
+                const angle = (i / particleCount) * Math.PI * 2 * 15;
+                
+                saturnPositions[i3] = Math.cos(angle) * ringRadius;
+                saturnPositions[i3 + 1] = (Math.random() - 0.5) * 2; 
+                saturnPositions[i3 + 2] = Math.sin(angle) * ringRadius;
+            }
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        const material = new THREE.PointsMaterial({
+            color: 0xffcc00, 
+            size: 0.5,      
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            sizeAttenuation: true
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // 3. MediaPipe
+        const videoElement = document.getElementById('input_video');
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        function dist(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function isFist(landmarks) {
+            const wrist = landmarks[0];
+            const tips = [8, 12, 16, 20];
+            const pips = [6, 10, 14, 18];
+            
+            let folded = 0;
+            for(let i=0; i<4; i++) {
+                if (dist(wrist, landmarks[tips[i]]) < dist(wrist, landmarks[pips[i]]) * 1.3) {
+                    folded++;
+                }
+            }
+            return folded >= 3;
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                isSaturnMode = isFist(landmarks);
+
+                const palmCenter = landmarks[9];
+                handNormalized.x = (1 - palmCenter.x) * 2 - 1; 
+                handNormalized.y = -(palmCenter.y) * 2 + 1;
+
+                // 손 크기(거리) 계산
+                const handSize = dist(landmarks[0], landmarks[9]);
+                handNormalized.z = handSize;
+            } else {
+                handNormalized.z = 0; 
+            }
+        }
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        // 4. 애니메이션 루프
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posAttr = particles.geometry.attributes.position;
+            const posArr = posAttr.array;
+
+            // --- [모드 1: 손바닥 (우주 유영)] ---
+            if (!isSaturnMode) {
+                // 기준 크기 (이것보다 크면 전진, 작으면 후퇴)
+                const baseSize = 0.15; 
+                
+                // **수정됨: 속도 계수를 200 -> 8로 대폭 줄임 (미세 조정)**
+                const speedFactor = 8; 
+
+                let moveSpeed = 0;
+                // 손이 인식되었을 때만 속도 계산
+                if (handNormalized.z > 0) {
+                    // 손이 큼(가깝다) -> z값 큼 -> (큰값 - 기준) = 양수 -> moveSpeed 음수(후퇴)
+                    // 손이 작음(멀다) -> z값 작음 -> (작은값 - 기준) = 음수 -> moveSpeed 양수(접근)
+                    moveSpeed = -(handNormalized.z - baseSize) * speedFactor;
+                }
+
+                // 부드러운 감속을 위해 이동 속도 자체를 Lerp로 스무딩하고 싶지만,
+                // 여기선 직접 위치에 더하되 값이 작아서 자연스러울 것임.
+
+                for (let i = 0; i < particleCount; i++) {
+                    const i3 = i * 3;
+
+                    // 1) 토성 형태였다면 원래 위치로 서서히 복귀
+                    posArr[i3]   += (originalPositions[i3] - posArr[i3]) * 0.05;
+                    posArr[i3+1] += (originalPositions[i3+1] - posArr[i3+1]) * 0.05;
+                    
+                    // Z축도 원래 자리로 가려는 힘 + 손으로 미는 힘
+                    // originalPositions[i3+2]로 가려는 힘을 좀 약하게 줘서 이동이 먹히게 함
+                    posArr[i3+2] += (originalPositions[i3+2] - posArr[i3+2]) * 0.02;
+                    
+                    // **미세 이동 적용**
+                    posArr[i3+2] += moveSpeed;
+
+                    // 2) 무한 루프 (영역 벗어나면 반대편으로)
+                    const boundary = 250;
+                    if (posArr[i3+2] < -boundary) posArr[i3+2] += boundary * 2;
+                    if (posArr[i3+2] > boundary) posArr[i3+2] -= boundary * 2;
+                }
+                
+                // 손바닥일 땐 회전 멈춤
+                particles.rotation.x = THREE.MathUtils.lerp(particles.rotation.x, 0, 0.1);
+                particles.rotation.y = THREE.MathUtils.lerp(particles.rotation.y, 0, 0.1);
+            } 
+            
+            // --- [모드 2: 주먹 (토성 관찰)] ---
+            else {
+                for (let i = 0; i < particleCount; i++) {
+                    const i3 = i * 3;
+                    // 토성 모양으로 집결
+                    posArr[i3]   += (saturnPositions[i3] - posArr[i3]) * 0.08;
+                    posArr[i3+1] += (saturnPositions[i3+1] - posArr[i3+1]) * 0.08;
+                    posArr[i3+2] += (saturnPositions[i3+2] - posArr[i3+2]) * 0.08;
+                }
+
+                // 토성 회전 제어 (이건 유지)
+                const targetRotX = -handNormalized.y * 2;
+                const targetRotY = handNormalized.x * 2;
+
+                particles.rotation.x = THREE.MathUtils.lerp(particles.rotation.x, targetRotX, 0.1);
+                particles.rotation.y = THREE.MathUtils.lerp(particles.rotation.y, targetRotY, 0.1);
+            }
+
+            posAttr.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
             const spreadZ = 400; 
 
             positions[i3] = (Math.random() - 0.5) * spreadXY;
